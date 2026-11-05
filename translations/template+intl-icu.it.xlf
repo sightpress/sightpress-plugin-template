@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xliff xmlns="urn:oasis:names:tc:xliff:document:1.2" version="1.2">
+  <file source-language="en" target-language="it" datatype="plaintext" original="template">
+    <body>
+      <trans-unit id="plugin.summary">
+        <source>plugin.summary</source>
+        <target state="needs-review-translation">Questo plugin non ha ancora alcuna funzionalità.</target>
+      </trans-unit>
+      <trans-unit id="plugin.settings.title">
+        <source>plugin.settings.title</source>
+        <target state="needs-review-translation">Impostazioni</target>
+      </trans-unit>
+    </body>
+  </file>
+</xliff>
