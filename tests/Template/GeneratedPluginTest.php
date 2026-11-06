@@ -90,6 +90,14 @@ final class GeneratedPluginTest extends TestCase
         }
     }
 
+    public function testANewPluginStartsItsOwnReleaseHistory(): void
+    {
+        $this->generate(['--id=image-finder', '--name=ImageFinder']);
+
+        self::assertFileDoesNotExist($this->generated.'/CHANGELOG.md', 'The template\'s changelog is not the new plugin\'s.');
+        self::assertSame(['.' => '0.0.0'], json_decode((string) file_get_contents($this->generated.'/.release-please-manifest.json'), true));
+    }
+
     public function testSetupRefusesABareIdForAThirdPartyVendor(): void
     {
         $result = $this->runSetup(['--id=events', '--name=Events', '--vendor=acme']);

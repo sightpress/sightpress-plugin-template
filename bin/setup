@@ -79,8 +79,8 @@ final class PluginSetup
         '.gitattributes', '.github/renovate.json',
     ];
 
-    /** Template-only, never copied into a generated plugin. */
-    private const array TEMPLATE_ONLY = ['bin/setup', 'tests/Template', 'package-lock.json'];
+    /** Template-only, never copied into a generated plugin: the template's own release history is one of them. */
+    private const array TEMPLATE_ONLY = ['bin/setup', 'tests/Template', 'package-lock.json', 'CHANGELOG.md'];
 
     private const array SKIPPED_FOLDERS = ['.git', 'vendor', 'var', 'node_modules', '.phpunit.cache', 'playwright-report', 'test-results'];
 
@@ -113,6 +113,9 @@ final class PluginSetup
             if (!isset($options['keep-readme'])) {
                 $this->write($target.'/README.md', $this->readme($answers));
             }
+
+            // A new plugin starts its own release history; it never inherits the template's version.
+            $this->write($target.'/.release-please-manifest.json', "{\n  \".\": \"0.0.0\"\n}\n");
 
             if ($inPlace) {
                 $this->removeTemplateOnlyFiles($target);
