@@ -1,0 +1,9 @@
+includes:
+    - vendor/sightpress/plugin-core/quality/phpstan-base.neon
+
+parameters:
+    paths:
+        - src
+        - tests
+        - bin/setup
+    level: max

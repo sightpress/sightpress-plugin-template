@@ -1,0 +1,44 @@
+deptrac:
+  paths:
+    - ./src
+  layers:
+    - name: Plugin
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\TemplatePlugin$' }
+    - name: Contract
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\Contract\\.*' }
+    - name: Domain
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\Domain\\.*' }
+    - name: Application
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\Application\\.*' }
+    - name: Infrastructure
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\Infrastructure\\.*' }
+    - name: UI
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Template\\UI\\.*' }
+    - name: PluginCore
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\Core\\.*' }
+    # Add one collector per plugin listed in `requires`, for its Contract\ namespace only, for example:
+    #   - { type: classLike, value: '^SightPress\\Plugin\\AiHelper\\Contract\\.*' }
+    - name: RequiredContract
+      collectors:
+        - { type: classLike, value: '^SightPress\\Plugin\\NoneRequired\\Contract\\.*' }
+    # Plugins never use SightPress\Core\: no layer may depend on this one.
+    - name: Core
+      collectors:
+        - { type: classLike, value: '^SightPress\\Core\\.*' }
+    - name: Vendor
+      collectors:
+        - { type: classLike, value: '^(Symfony|Doctrine|Twig|Psr|PHPUnit)\\.*' }
+  ruleset:
+    Plugin: [Contract, Domain, Application, Infrastructure, UI, PluginCore, Vendor]
+    Contract: [PluginCore, Vendor]
+    Domain: [Contract, PluginCore, Vendor]
+    Application: [Domain, Contract, PluginCore, RequiredContract, Vendor]
+    Infrastructure: [Application, Domain, Contract, PluginCore, RequiredContract, Vendor]
+    UI: [Application, Domain, Contract, PluginCore, RequiredContract, Vendor]

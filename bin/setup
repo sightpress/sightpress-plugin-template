@@ -1,0 +1,410 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Turns the plugin template into a plugin: renames the id, package, bundle class
+ * and namespace, and writes the manifest values.
+ *
+ *   php bin/setup                                  asks for the id, name, vendor and namespace
+ *   php bin/setup --id=events --name=Events        no questions (also used when there is no terminal)
+ *   php bin/setup --id=acme.events --name=Events --vendor=acme --namespace='Acme\Events'
+ *   php bin/setup --id=form-builder --target=../plugin-form-builder --keep-readme
+ *                                                  copies the template into an existing checkout first
+ *
+ * Options: --id --name --vendor --namespace --description --target --keep-readme --no-interaction
+ *
+ * Official plugins use a bare id ("forms") and the vendor "sightpress"; third-party
+ * plugins use "<vendor>.<name>".
+ */
+final readonly class PluginAnswers
+{
+    public function __construct(
+        public string $id,
+        public string $name,
+        public string $vendor,
+        public string $namespace,
+        public string $description,
+    ) {
+        if (1 !== preg_match('/^(?:[a-z0-9]+(?:-[a-z0-9]+)*\.)?[a-z0-9]+(?:-[a-z0-9]+)*$/', $id)) {
+            throw new InvalidArgumentException(sprintf('The id "%s" is not valid. Use kebab-case, with an optional "vendor." prefix, for example "events" or "acme.events".', $id));
+        }
+        if (1 !== preg_match('/^[A-Z][A-Za-z0-9]*$/', $name)) {
+            throw new InvalidArgumentException(sprintf('The name "%s" is not valid. Use PascalCase letters and digits, for example "ImageFinder".', $name));
+        }
+        if (1 !== preg_match('/^[a-z0-9](?:[a-z0-9_.-]*[a-z0-9])?$/', $vendor)) {
+            throw new InvalidArgumentException(sprintf('The vendor "%s" is not valid. Use lowercase letters, digits, dots, dashes and underscores.', $vendor));
+        }
+        if (1 !== preg_match('/^[A-Z][A-Za-z0-9]*(?:\\\\[A-Z][A-Za-z0-9]*)*$/', $namespace)) {
+            throw new InvalidArgumentException(sprintf('The namespace "%s" is not valid. Use PascalCase parts separated by backslashes, for example "Acme\Events".', $namespace));
+        }
+        if (!str_contains($id, '.') && 'sightpress' !== $vendor) {
+            throw new InvalidArgumentException('Bare ids are for official plugins. Give a third-party plugin an id such as "acme.events".');
+        }
+    }
+
+    public function package(): string
+    {
+        return $this->vendor.'/plugin-'.$this->idWithoutVendor();
+    }
+
+    public function idWithoutVendor(): string
+    {
+        $parts = explode('.', $this->id, 2);
+
+        return $parts[1] ?? $parts[0];
+    }
+
+    /** The lowercase, underscore form used for the translation domain. */
+    public function slug(): string
+    {
+        return str_replace(['.', '-'], '_', $this->id);
+    }
+
+    public function pluginClass(): string
+    {
+        return $this->name.'Plugin';
+    }
+}
+
+final class PluginSetup
+{
+    private const string TEMPLATE_NAMESPACE = 'SightPress\Plugin\Template';
+    private const string TEMPLATE_DESCRIPTION = 'The starting point for a new SightPress plugin.';
+
+    /** Kept when the template is copied into an existing checkout, if the checkout already has them. */
+    private const array PRESERVED = [
+        'README.md', 'LICENSE.md', 'SECURITY.md', 'CONTRIBUTING.md', '.gitignore', '.editorconfig',
+        '.gitattributes', '.github/renovate.json',
+    ];
+
+    /** Template-only, never copied into a generated plugin. */
+    private const array TEMPLATE_ONLY = ['bin/setup', 'tests/Template', 'package-lock.json'];
+
+    private const array SKIPPED_FOLDERS = ['.git', 'vendor', 'var', 'node_modules', '.phpunit.cache', 'playwright-report', 'test-results'];
+
+    private const array SKIPPED_FILES = ['composer.lock', 'composer.dev.lock', '.php-cs-fixer.cache', '.phpunit.result.cache', '.rector.cache', '.deptrac.cache'];
+
+    private const array TEXT_EXTENSIONS = ['php', 'yaml', 'yml', 'neon', 'xlf', 'ts', 'twig', 'xml'];
+
+    private string $root;
+
+    /** @param list<string> $argv */
+    public function __construct(private readonly array $argv)
+    {
+        $this->root = dirname(__DIR__);
+    }
+
+    public function run(): int
+    {
+        try {
+            $options = $this->options();
+            $answers = $this->answers($options);
+            $inPlace = !isset($options['target']);
+            $target = $inPlace ? $this->root : $this->absolute((string) $options['target']);
+
+            if (!$inPlace) {
+                $this->copyTemplate($target);
+            }
+
+            $this->transform($target, $answers);
+
+            if (!isset($options['keep-readme'])) {
+                $this->write($target.'/README.md', $this->readme($answers));
+            }
+
+            if ($inPlace) {
+                $this->removeTemplateOnlyFiles($target);
+            }
+        } catch (InvalidArgumentException|RuntimeException $e) {
+            fwrite(\STDERR, 'Failed: '.$e->getMessage()."\n");
+
+            return 1;
+        }
+
+        echo sprintf("Passed: the plugin \"%s\" (%s) is set up in %s.\n", $answers->id, $answers->package(), $target);
+        echo "Next: COMPOSER=composer.dev.json composer install, then composer qa.\n";
+
+        return 0;
+    }
+
+    /** @return array<string, string|true> */
+    private function options(): array
+    {
+        $options = [];
+        foreach (array_slice($this->argv, 1) as $argument) {
+            if (1 !== preg_match('/^--([a-z-]+)(?:=(.*))?$/s', $argument, $matches)) {
+                throw new InvalidArgumentException(sprintf('Unknown argument "%s". See the comment at the top of bin/setup.', $argument));
+            }
+            $options[$matches[1]] = $matches[2] ?? true;
+        }
+
+        return $options;
+    }
+
+    /** @param array<string, string|true> $options */
+    private function answers(array $options): PluginAnswers
+    {
+        $interactive = !isset($options['no-interaction']) && function_exists('stream_isatty') && stream_isatty(\STDIN);
+
+        $id = $this->value($options, 'id', 'Plugin id, for example "events" or "acme.events"', null, $interactive);
+        $rest = explode('.', $id, 2);
+        $isThirdParty = isset($rest[1]);
+        $name = $this->value($options, 'name', 'Plugin name in PascalCase', $this->pascalCase($rest[1] ?? $rest[0]), $interactive);
+        $vendor = $this->value($options, 'vendor', 'Composer vendor', $isThirdParty ? $rest[0] : 'sightpress', $interactive);
+        $default = ($isThirdParty ? $this->pascalCase($rest[0]) : 'SightPress').'\\Plugin\\'.$name;
+        $namespace = $this->value($options, 'namespace', 'PHP namespace', $default, $interactive);
+        $description = $this->value($options, 'description', 'One-line description', sprintf('The %s plugin for SightPress.', $name), false);
+
+        return new PluginAnswers($id, $name, $vendor, trim($namespace, '\\'), $description);
+    }
+
+    /** @param array<string, string|true> $options */
+    private function value(array $options, string $key, string $label, ?string $default, bool $interactive): string
+    {
+        $given = $options[$key] ?? null;
+        if (is_string($given) && '' !== $given) {
+            return $given;
+        }
+
+        if ($interactive) {
+            echo null === $default ? sprintf('%s: ', $label) : sprintf('%s (default: %s): ', $label, $default);
+            $line = fgets(\STDIN);
+            $line = false === $line ? '' : trim($line);
+            if ('' !== $line) {
+                return $line;
+            }
+        }
+
+        if (null === $default) {
+            throw new InvalidArgumentException(sprintf('Option --%s is required when there is no terminal to ask in.', $key));
+        }
+
+        return $default;
+    }
+
+    private function pascalCase(string $value): string
+    {
+        return implode('', array_map(ucfirst(...), preg_split('/[-_.]+/', $value) ?: [$value]));
+    }
+
+    private function absolute(string $path): string
+    {
+        if (!is_dir($path)) {
+            throw new InvalidArgumentException(sprintf('The target folder "%s" does not exist.', $path));
+        }
+
+        $real = realpath($path);
+        if (false === $real) {
+            throw new RuntimeException(sprintf('Cannot resolve "%s".', $path));
+        }
+
+        return $real;
+    }
+
+    private function copyTemplate(string $target): void
+    {
+        foreach ($this->files($this->root, true) as $relative => $path) {
+            foreach (self::TEMPLATE_ONLY as $templateOnly) {
+                if ($relative === $templateOnly || str_starts_with($relative, $templateOnly.'/')) {
+                    continue 2;
+                }
+            }
+            $destination = $target.'/'.$relative;
+            if (in_array($relative, self::PRESERVED, true) && file_exists($destination)) {
+                continue;
+            }
+            if (!is_dir(dirname($destination)) && !mkdir(dirname($destination), 0o777, true)) {
+                throw new RuntimeException(sprintf('Cannot create the folder for "%s".', $relative));
+            }
+            if (!copy($path, $destination)) {
+                throw new RuntimeException(sprintf('Cannot copy "%s".', $relative));
+            }
+        }
+    }
+
+    private function transform(string $dir, PluginAnswers $answers): void
+    {
+        $namespaceSingle = $answers->namespace;
+        $namespaceDouble = str_replace('\\', '\\\\', $namespaceSingle);
+        $templateDouble = str_replace('\\', '\\\\', self::TEMPLATE_NAMESPACE);
+
+        foreach ($this->files($dir, false) as $relative => $path) {
+            $extension = pathinfo($relative, \PATHINFO_EXTENSION);
+            $isComposer = in_array($relative, ['composer.json', 'composer.dev.json', 'release-please-config.json'], true);
+            if (!$isComposer && !in_array($extension, self::TEXT_EXTENSIONS, true)) {
+                continue;
+            }
+
+            $text = $this->read($path);
+            $text = str_replace(
+                [$templateDouble, self::TEMPLATE_NAMESPACE, 'TemplatePlugin'],
+                [$namespaceDouble, $namespaceSingle, $answers->pluginClass()],
+                $text,
+            );
+
+            if ('xlf' === $extension) {
+                $text = str_replace('original="template"', sprintf('original="%s"', $answers->slug()), $text);
+            }
+            if ('composer.json' === $relative) {
+                $text = $this->composerJson($text, $answers);
+            }
+            // The package name in the development set-up and the release pipeline.
+            if (in_array($relative, ['composer.dev.json', '.github/workflows/release.yml', 'release-please-config.json'], true)) {
+                if (!str_contains($text, 'sightpress/plugin-template')) {
+                    throw new RuntimeException(sprintf('%s no longer contains sightpress/plugin-template, so the template and bin/setup are out of step.', $relative));
+                }
+                $text = str_replace('sightpress/plugin-template', $answers->package(), $text);
+            }
+            if ('phpstan.dist.neon' === $relative) {
+                $text = str_replace("        - bin/setup\n", '', $text);
+            }
+            if ('php' === $extension) {
+                $text = $this->sortImports($text);
+            }
+
+            $this->write($path, $text);
+        }
+
+        $bundle = $dir.'/src/TemplatePlugin.php';
+        if (is_file($bundle) && !rename($bundle, $dir.'/src/'.$answers->pluginClass().'.php')) {
+            throw new RuntimeException('Cannot rename the bundle class file.');
+        }
+
+        foreach (glob($dir.'/translations/template+intl-icu.*.xlf') ?: [] as $catalogue) {
+            $renamed = dirname($catalogue).'/'.str_replace('template+', $answers->slug().'+', basename($catalogue));
+            if (!rename($catalogue, $renamed)) {
+                throw new RuntimeException(sprintf('Cannot rename "%s".', basename($catalogue)));
+            }
+        }
+    }
+
+    private function composerJson(string $text, PluginAnswers $answers): string
+    {
+        $replacements = [
+            'sightpress/plugin-template' => $answers->package(),
+            '"type": "project"' => '"type": "sightpress-plugin"',
+            '"id": "template"' => sprintf('"id": "%s"', $answers->id),
+            '"template.manage"' => sprintf('"%s.manage"', $answers->id),
+            // The template is a project, so it checks the launch locales; a generated
+            // plugin checks the locales its manifest requires (plugins.md §5).
+            'translations template"' => sprintf('translations %s --manifest=composer.json"', $answers->slug()),
+            sprintf('"description": "%s"', self::TEMPLATE_DESCRIPTION) => '"description": '.json_encode($answers->description, \JSON_UNESCAPED_SLASHES | \JSON_UNESCAPED_UNICODE | \JSON_THROW_ON_ERROR),
+        ];
+
+        foreach ($replacements as $from => $to) {
+            if (!str_contains($text, (string) $from)) {
+                throw new RuntimeException(sprintf('composer.json no longer contains %s, so the template and bin/setup are out of step.', $from));
+            }
+            $text = str_replace((string) $from, $to, $text);
+        }
+
+        return $text;
+    }
+
+    private function readme(PluginAnswers $answers): string
+    {
+        return <<<MD
+            # SightPress {$answers->name}
+
+            `{$answers->package()}`: {$answers->description} Licensed GPL-2.0-or-later.
+
+            > **Status:** M0 scaffolding only; the plugin has no features yet.
+
+            ## Development
+
+            ```bash
+            COMPOSER=composer.dev.json composer install   # uses the sibling checkouts of plugin-core and core
+            composer qa                                    # tests, static analysis, code style, Rector, Deptrac, translations
+            npx playwright test                            # every manifest route with axe-core (needs SIGHTPRESS_BASE_URL)
+            ```
+
+            MD;
+    }
+
+    private function removeTemplateOnlyFiles(string $dir): void
+    {
+        foreach (self::TEMPLATE_ONLY as $relative) {
+            $this->remove($dir.'/'.$relative);
+        }
+        $this->remove($dir.'/var/staged');
+        if (is_dir($dir.'/bin') && [] === array_diff(scandir($dir.'/bin') ?: [], ['.', '..'])) {
+            rmdir($dir.'/bin');
+        }
+    }
+
+    private function remove(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            unlink($path);
+
+            return;
+        }
+        if (!is_dir($path)) {
+            return;
+        }
+        foreach (array_diff(scandir($path) ?: [], ['.', '..']) as $child) {
+            $this->remove($path.'/'.$child);
+        }
+        rmdir($path);
+    }
+
+    /**
+     * Files below $dir by relative path.
+     *
+     * @return array<string, string>
+     */
+    private function files(string $dir, bool $includeMarkdown): array
+    {
+        $found = [];
+        $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if (!$file instanceof SplFileInfo || !$file->isFile()) {
+                continue;
+            }
+            $relative = substr($file->getPathname(), strlen($dir) + 1);
+            if (in_array(explode('/', $relative)[0], self::SKIPPED_FOLDERS, true) || in_array(basename($relative), self::SKIPPED_FILES, true)) {
+                continue;
+            }
+            if (!$includeMarkdown && 'md' === $file->getExtension()) {
+                continue;
+            }
+            $found[$relative] = $file->getPathname();
+        }
+        ksort($found);
+
+        return $found;
+    }
+
+    private function read(string $path): string
+    {
+        $text = file_get_contents($path);
+        if (false === $text) {
+            throw new RuntimeException(sprintf('Cannot read "%s".', $path));
+        }
+
+        return $text;
+    }
+
+    /** The new namespace can sort differently from SightPress\\Plugin\\Template, so imports are put back in order. */
+    private function sortImports(string $text): string
+    {
+        return (string) preg_replace_callback('/^(?:use [^;\n]+;\n)+/m', static function (array $block): string {
+            $lines = explode("\n", rtrim($block[0], "\n"));
+            usort($lines, static fn (string $a, string $b): int => strcasecmp(rtrim($a, ';'), rtrim($b, ';')));
+
+            return implode("\n", $lines)."\n";
+        }, $text);
+    }
+
+    private function write(string $path, string $text): void
+    {
+        if (false === file_put_contents($path, $text)) {
+            throw new RuntimeException(sprintf('Cannot write "%s".', $path));
+        }
+    }
+}
+
+/** @var list<string> $argv */
+exit(new PluginSetup($argv)->run());

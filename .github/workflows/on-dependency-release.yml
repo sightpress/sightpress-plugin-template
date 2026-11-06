@@ -1,0 +1,19 @@
+name: On dependency release
+
+# Receives repository_dispatch from plugin-core and core (RELEASING.md §6).
+# Runs the full CI against the new version and reports the result; a version
+# inside the existing constraint changes nothing.
+
+on:
+  repository_dispatch:
+    types: [plugin-core-released, package-released]
+
+permissions:
+  contents: read
+
+jobs:
+  qa:
+    uses: sightpress/.github/.github/workflows/plugin-qa.yml@main
+    with:
+      plugin-core-ref: ${{ github.event.client_payload.package == 'sightpress/plugin-core' && format('v{0}', github.event.client_payload.version) || '' }}
+      core-ref: ${{ github.event.client_payload.package == 'sightpress/core' && format('v{0}', github.event.client_payload.version) || '' }}

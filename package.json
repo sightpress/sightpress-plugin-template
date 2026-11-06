@@ -1,0 +1,15 @@
+{
+  "name": "sightpress-plugin-e2e",
+  "private": true,
+  "description": "Browser tests with axe-core for this plugin's routes.",
+  "license": "GPL-2.0-or-later",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^22.0.0"
+  }
+}
